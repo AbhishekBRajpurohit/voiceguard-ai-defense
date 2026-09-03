@@ -71,11 +71,13 @@ class AASISTNeuralEngine:
             result["bonafide_probability"] = round((1.0 - blended_score) * 100, 1)
             result["trust_score"] = round((1.0 - blended_score) * 100, 1)
             result["engine"] = "AASIST PyTorch Deep GAT Neural Network"
+            result["metrics"]["syntheticRisk"] = round(blended_score, 4)
+            result["prediction"] = "SPOOF" if blended_score >= 0.52 else "BONAFIDE"
             
-            if blended_score >= 0.55:
+            if blended_score >= 0.58:
                 result["decision"] = "BLOCK"
                 result["status"] = "AI Voice Clone Intercepted by AASIST Neural Network"
-            elif blended_score >= 0.35:
+            elif blended_score >= 0.50:
                 result["decision"] = "FLAGGED"
                 result["status"] = "Ambiguous Signal — Secondary Telephony Challenge Triggered"
             else:
