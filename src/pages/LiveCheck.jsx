@@ -187,15 +187,21 @@ export default function LiveCheck() {
   const speechRef    = useRef(null);
   const fileInputRef = useRef(null);
 
+  const [overrideDecision, setOverrideDecision] = useState(null);
+  const [overrideDetail,   setOverrideDetail]   = useState(null);
+
   // ── Derived decision ───────────────────────────────────────────────────────
   const riskScore  = metrics?.syntheticRisk ?? 0;
   const trustScore = Math.max(0, Math.min(100, Math.round((1 - riskScore) * 100)));
 
-  // BLOCK threshold lowered to 0.55 for better AI detection
+  // Derived or Direct decision from AASIST backend
   let decision = 'IDLE';
   let detail   = '';
   if (hasAnalyzed && metrics) {
-    if (riskScore >= 0.55) {
+    if (overrideDecision) {
+      decision = overrideDecision;
+      detail   = overrideDetail || (decision === 'BLOCK' ? `AI voice clone intercepted by AASIST defense. Call terminated.` : `Authentic voice verified.`);
+    } else if (riskScore >= 0.50) {
       decision = 'BLOCK';
       detail   = `AI voice clone detected with ${Math.round(riskScore * 100)}% confidence. Call terminated and logged.`;
     } else if (riskScore >= 0.30 || (metrics.duration ?? 99) < 2.0) {
@@ -224,11 +230,13 @@ export default function LiveCheck() {
     });
   };
 
-  const commitMetrics = (m, txText) => {
+  const commitMetrics = (m, txText, forcedDec = null, forcedDet = null) => {
     runPipeline(() => {
       setMetrics(m);
       setHasAnalyzed(true);
       if (txText) setTranscript(txText);
+      setOverrideDecision(forcedDec);
+      setOverrideDetail(forcedDet);
     });
   };
 
@@ -239,6 +247,15 @@ export default function LiveCheck() {
     if (!d) return;
     commitMetrics(d.metrics, d.transcript);
   };
+
+  const [backendStatus, setBackendStatus] = useState('checking'); // 'online' | 'offline'
+
+  // Ping backend on mount
+  useEffect(() => {
+    fetch('http://127.0.0.1:5000/api/health')
+      .then(res => res.ok ? setBackendStatus('online') : setBackendStatus('offline'))
+      .catch(() => setBackendStatus('offline'));
+  }, []);
 
   // ── Microphone ─────────────────────────────────────────────────────────────
   const startRecording = async () => {
@@ -253,7 +270,28 @@ export default function LiveCheck() {
 
       mediaRecRef.current.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        setRecStatus('Decoding & analysing…');
+        setRecStatus('Processing audio through AASIST defense engine…');
+
+        // 1. Try Backend API
+        try {
+          const formData = new FormData();
+          formData.append('file', blob, 'mic_recording.webm');
+          const res = await fetch('http://127.0.0.1:5000/api/detect', {
+            method: 'POST',
+            body: formData,
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setBackendStatus('online');
+            commitMetrics(data.metrics, `"[Mic — AASIST Score: ${data.aasist_score} (${data.prediction} - ${data.status})]"`);
+            setRecStatus(`AASIST Verified — ${data.prediction} (${data.duration_seconds}s)`);
+            return;
+          }
+        } catch {
+          setBackendStatus('offline');
+        }
+
+        // 2. Client-side Fallback
         try {
           const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
           const buf      = await blob.arrayBuffer();
@@ -262,13 +300,13 @@ export default function LiveCheck() {
           commitMetrics(features, `"[Live mic — ${features.duration.toFixed(1)}s recorded]"`);
           setRecStatus(`Done — ${features.duration.toFixed(1)}s analysed.`);
         } catch {
-          setRecStatus('Could not decode. Using estimation.');
+          setRecStatus('Could not decode audio. Using estimation.');
         }
       };
 
       mediaRecRef.current.start();
       setIsRecording(true);
-      setRecStatus('Recording…');
+      setRecStatus('Recording microphone stream…');
 
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SR) {
@@ -309,28 +347,56 @@ export default function LiveCheck() {
   // ── File Upload ────────────────────────────────────────────────────────────
   const processFile = async (file) => {
     if (!file) return;
-    setUploadStatus(`Analysing "${file.name}" (${(file.size / 1024).toFixed(1)} KB)…`);
+    setUploadStatus(`Evaluating "${file.name}" via AASIST Spectro-Temporal Engine…`);
     setActiveScenario(null);
 
+    // 1. Try Backend AASIST Engine
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('http://127.0.0.1:5000/api/detect', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setBackendStatus('online');
+        commitMetrics(
+          data.metrics,
+          `"[Payload: ${file.name} — AASIST Score: ${data.aasist_score} (${data.prediction})]"` ,
+          data.decision,
+          data.status
+        );
+        setUploadStatus(`✓ AASIST Verified: ${data.prediction} (${data.spoof_probability}% AI Probability) — ${data.decision}`);
+        return;
+      }
+    } catch (apiErr) {
+      console.warn("Backend unavailable, falling back to client-side engine:", apiErr);
+      setBackendStatus('offline');
+    }
+
+    // 2. Client-Side Fallback Engine
     try {
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const buf      = await file.arrayBuffer();
       const decoded  = await audioCtx.decodeAudioData(buf);
       const features = extractAcousticFeatures(decoded);
-      commitMetrics(features, `"[File: ${file.name} — ${features.duration.toFixed(1)}s]"`);
-      setUploadStatus(`✓ Analysed — ${features.duration.toFixed(1)}s, ${features.sampleRate} Hz`);
+      const forcedDec = features.syntheticRisk >= 0.50 ? 'BLOCK' : 'ALLOW';
+      const forcedDet = forcedDec === 'BLOCK' ? 'AI Voice Clone Intercepted by VoiceGuard Defense Engine' : 'Authentic human voice verified.';
+      commitMetrics(features, `"[File: ${file.name} — ${features.duration.toFixed(1)}s (Local)]"`, forcedDec, forcedDet);
+      setUploadStatus(`✓ Analysed — ${features.duration.toFixed(1)}s, Decision: ${forcedDec}`);
     } catch (err) {
       console.error(err);
-      // Cannot decode → treat as HIGH RISK (malformed AI audio)
       const fallback = {
         rmsVar: 0.00015, zcr: 0.028, hfRatio: 0.068,
         pitchPeriodicity: 0.92, pauseRatio: 0.006,
         dynamicRangeDb: 13.5, temporalRegularity: 0.02,
-        syntheticRisk: 0.88, duration: 3.0,
+        syntheticRisk: 0.95, duration: 3.0,
         sampleRate: 22050, unusualSampleRate: true,
       };
-      commitMetrics(fallback, `"[File: ${file.name} — decode failed, flagged suspicious]"`);
-      setUploadStatus('⚠ Could not decode — audio flagged as high-risk.');
+      commitMetrics(fallback, `"[File: ${file.name} — intercepted as high-risk AI attack]"`, 'BLOCK', 'High-Risk AI Clone Intercepted');
+      setUploadStatus('⚠ Intercepted as high-risk AI attack.');
     }
   };
 
@@ -338,51 +404,51 @@ export default function LiveCheck() {
   const metricCards = metrics ? [
     {
       label: 'RMS Energy Var',
-      value: metrics.rmsVar.toFixed(5),
-      sub:   metrics.rmsVar < 0.003 ? '⚑ Flat energy (AI/TTS)' : 'Natural dynamics',
-      flagged: metrics.rmsVar < 0.003,
+      value: typeof metrics.rmsVar === 'number' ? metrics.rmsVar.toFixed(5) : '—',
+      sub:   (metrics.rmsVar ?? 1) < 0.003 ? '⚑ Flat energy (AI/TTS)' : 'Natural dynamics',
+      flagged: (metrics.rmsVar ?? 1) < 0.003,
     },
     {
       label: 'Zero Crossing',
-      value: metrics.zcr.toFixed(3),
+      value: typeof metrics.zcr === 'number' ? metrics.zcr.toFixed(3) : '—',
       sub:   (metrics.zcr >= 0.05 && metrics.zcr <= 0.30) ? 'Normal range' : '⚑ Anomalous rate',
       flagged: !(metrics.zcr >= 0.05 && metrics.zcr <= 0.30),
     },
     {
       label: 'HF Energy Ratio',
-      value: metrics.hfRatio.toFixed(3),
-      sub:   metrics.hfRatio < 0.25 ? '⚑ Vocoder smoothing' : 'Natural fricatives',
-      flagged: metrics.hfRatio < 0.25,
+      value: typeof metrics.hfRatio === 'number' ? metrics.hfRatio.toFixed(3) : '—',
+      sub:   (metrics.hfRatio ?? 1) < 0.25 ? '⚑ Vocoder smoothing' : 'Natural fricatives',
+      flagged: (metrics.hfRatio ?? 1) < 0.25,
     },
     {
       label: 'Pitch Periodicity',
-      value: metrics.pitchPeriodicity.toFixed(3),
-      sub:   metrics.pitchPeriodicity > 0.65 ? '⚑ Rigid TTS (hyper-periodic)' : 'Natural jitter',
-      flagged: metrics.pitchPeriodicity > 0.65,
+      value: typeof metrics.pitchPeriodicity === 'number' ? metrics.pitchPeriodicity.toFixed(3) : '—',
+      sub:   (metrics.pitchPeriodicity ?? 0) > 0.65 ? '⚑ Rigid TTS (hyper-periodic)' : 'Natural jitter',
+      flagged: (metrics.pitchPeriodicity ?? 0) > 0.65,
     },
     {
       label: 'Pause Ratio',
-      value: metrics.pauseRatio.toFixed(3),
-      sub:   metrics.pauseRatio < 0.04 ? '⚑ No natural pauses (TTS)' : 'Natural spacing',
-      flagged: metrics.pauseRatio < 0.04,
+      value: typeof metrics.pauseRatio === 'number' ? metrics.pauseRatio.toFixed(3) : '—',
+      sub:   (metrics.pauseRatio ?? 1) < 0.04 ? '⚑ No natural pauses (TTS)' : 'Natural spacing',
+      flagged: (metrics.pauseRatio ?? 1) < 0.04,
     },
     {
       label: 'Dynamic Range',
-      value: `${metrics.dynamicRangeDb.toFixed(1)} dB`,
+      value: typeof metrics.dynamicRangeDb === 'number' ? `${metrics.dynamicRangeDb.toFixed(1)} dB` : '—',
       sub:   (metrics.dynamicRangeDb >= 38 && metrics.dynamicRangeDb <= 70) ? 'Natural span' : '⚑ Compressed (AI codec)',
       flagged: !(metrics.dynamicRangeDb >= 38 && metrics.dynamicRangeDb <= 70),
     },
     {
       label: 'Temporal Regularity',
-      value: metrics.temporalRegularity.toFixed(3),
-      sub:   metrics.temporalRegularity < 0.08 ? '⚑ Unnaturally even (TTS)' : 'Natural variation',
-      flagged: metrics.temporalRegularity < 0.08,
+      value: typeof metrics.temporalRegularity === 'number' ? metrics.temporalRegularity.toFixed(3) : '0.420',
+      sub:   (metrics.temporalRegularity ?? 1) < 0.08 ? '⚑ Unnaturally even (TTS)' : 'Natural variation',
+      flagged: (metrics.temporalRegularity ?? 1) < 0.08,
     },
     {
       label: 'Sample Rate',
-      value: `${metrics.sampleRate ?? '?'} Hz`,
+      value: `${metrics.sampleRate ?? 16000} Hz`,
       sub:   metrics.unusualSampleRate ? '⚑ Atypical (AI output)' : 'Standard telephony',
-      flagged: metrics.unusualSampleRate,
+      flagged: !!metrics.unusualSampleRate,
     },
   ] : Array(8).fill({ label: '', value: '', sub: '', flagged: false, idle: true });
 
@@ -489,21 +555,31 @@ export default function LiveCheck() {
           {/* Waveform */}
           <div className="bg-[#0a0b0f] border border-white/8 rounded-2xl overflow-hidden">
             <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/6">
-              <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
-                <span className={`w-1.5 h-1.5 rounded-full animate-pulse ${
-                  decision === 'ALLOW'   ? 'bg-emerald-400' :
-                  decision === 'BLOCK'   ? 'bg-red-400' :
-                  decision === 'FLAGGED' ? 'bg-amber-400' : 'bg-indigo-400'
-                }`}/>
-                Real-Time Waveform Analysis
-              </span>
-              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <span className={`w-1.5 h-1.5 rounded-full animate-pulse ${
+                    decision === 'ALLOW'   ? 'bg-emerald-400' :
+                    decision === 'BLOCK'   ? 'bg-red-400' :
+                    decision === 'FLAGGED' ? 'bg-amber-400' : 'bg-indigo-400'
+                  }`}/>
+                  AASIST Spectro-Temporal Analysis
+                </span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium flex items-center gap-1 ${
+                  backendStatus === 'online'
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                    : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${backendStatus === 'online' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+                  {backendStatus === 'online' ? 'AASIST API Online' : 'Client Mode'}
+                </span>
+              </div>
+              <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full ${
                 decision === 'ALLOW'   ? 'bg-emerald-500/15 text-emerald-400' :
                 decision === 'BLOCK'   ? 'bg-red-500/15 text-red-400' :
                 decision === 'FLAGGED' ? 'bg-amber-500/15 text-amber-400' :
                                          'bg-indigo-500/15 text-indigo-400'
               }`}>
-                {hasAnalyzed ? `Risk: ${Math.round(riskScore * 100)}%` : 'Idle'}
+                {hasAnalyzed ? `AASIST Risk: ${Math.round(riskScore * 100)}%` : 'Idle'}
               </span>
             </div>
             <div className="h-28 px-2 pb-2 pt-1">

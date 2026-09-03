@@ -8,7 +8,38 @@ import Dashboard from './pages/Dashboard';
 import About from './pages/About';
 import Contact from './pages/Contact';
 import SignIn from './pages/SignIn';
-import { X } from 'lucide-react';
+import { X, AlertTriangle } from 'lucide-react';
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error("ErrorBoundary caught:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-8 text-center flex flex-col items-center gap-3">
+          <AlertTriangle className="text-amber-400" size={32} />
+          <h3 className="text-base font-bold text-white">Component Reload Needed</h3>
+          <p className="text-xs text-zinc-400 max-w-sm">A minor render issue occurred. Click below to reload the view.</p>
+          <button
+            onClick={() => this.setState({ hasError: false })}
+            className="px-4 py-2 bg-indigo-600 rounded-lg text-xs font-semibold text-white hover:bg-indigo-500 cursor-pointer"
+          >
+            Reset View
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('home');
@@ -90,11 +121,13 @@ export default function App() {
 
             {/* Modal Content Body */}
             <div className="flex-1 overflow-y-auto p-6">
-              {activeTab === 'live' && <LiveCheck />}
-              {activeTab === 'dashboard' && <Dashboard />}
-              {activeTab === 'about' && <About />}
-              {activeTab === 'contact' && <Contact />}
-              {activeTab === 'signin' && <SignIn closeModal={() => { setModalOpen(false); setActiveTab('home'); }} />}
+              <ErrorBoundary>
+                {activeTab === 'live' && <LiveCheck />}
+                {activeTab === 'dashboard' && <Dashboard />}
+                {activeTab === 'about' && <About />}
+                {activeTab === 'contact' && <Contact />}
+                {activeTab === 'signin' && <SignIn closeModal={() => { setModalOpen(false); setActiveTab('home'); }} />}
+              </ErrorBoundary>
             </div>
           </div>
         </div>
