@@ -110,55 +110,33 @@ export function extractAcousticFeatures(audioBuffer) {
     ? Math.min(1, chunkVar / (chunkMean * chunkMean + 1e-9))
     : 0;
 
-  // ── 8. INVERTED "Guilty-Until-Proven-Innocent" Risk Score ──────────────
-  //
-  // Start at 0.60 (BLOCK by default). Only SUBTRACT when we see
-  // convincing evidence of human speech.
-  //
-  let syntheticRisk = 0.60;
+  // ── 8. Calibrated Risk Score ─────────────────────────────────────────
+  // Neutral baseline: 0.40
+  let syntheticRisk = 0.40;
 
-  // Human indicator 1: High RMS variance → natural loudness modulation
-  // (breathing, emphasis, emotion create high variance)
-  if (rmsVar > 0.008)      syntheticRisk -= 0.15;
-  else if (rmsVar > 0.004) syntheticRisk -= 0.10;
-  else if (rmsVar > 0.002) syntheticRisk -= 0.04;
-  // rmsVar < 0.002 → no reduction → stays risky (AI-flat)
-
-  // Human indicator 2: Natural pause presence
-  // Real humans pause to think, breathe. TTS is continuous.
-  if (pauseRatio > 0.15)      syntheticRisk -= 0.12;
-  else if (pauseRatio > 0.08) syntheticRisk -= 0.07;
-  else if (pauseRatio > 0.04) syntheticRisk -= 0.03;
-  // pauseRatio < 0.04 → no reduction → stays risky
-
-  // Human indicator 3: Pitch instability (low periodicity)
-  // Human vocal cords jitter; TTS is hyper-periodic.
-  if (pitchPeriodicity < 0.40)       syntheticRisk -= 0.15;
-  else if (pitchPeriodicity < 0.55)  syntheticRisk -= 0.08;
-  else if (pitchPeriodicity < 0.65)  syntheticRisk -= 0.03;
-  // periodicity > 0.65 → no reduction → stays risky
-
-  // Human indicator 4: Wide dynamic range (real mic captures room noise + voice)
-  if (dynamicRangeDb > 50)      syntheticRisk -= 0.08;
-  else if (dynamicRangeDb > 38) syntheticRisk -= 0.04;
-
-  // Human indicator 5: Temporal irregularity (energy not evenly distributed)
-  if (temporalRegularity > 0.25)       syntheticRisk -= 0.08;
-  else if (temporalRegularity > 0.12)  syntheticRisk -= 0.04;
-
-  // Human indicator 6: Normal ZCR range
-  if (zcr >= 0.06 && zcr <= 0.25)     syntheticRisk -= 0.04;
-
-  // Penalty: Unusual sample rate (22050, 24000 = TTS output default)
-  if (fs === 22050 || fs === 24000)    syntheticRisk += 0.06;
-
-  // Short-clip cap: < 2s → can't reliably classify → cap at FLAG level
-  if (duration < 2.0) {
-    syntheticRisk = Math.min(syntheticRisk, 0.48);
+  // Indicator A: Pitch periodicity (Humans jitter/modulate; AI TTS is unnaturally rigid)
+  if (pitchPeriodicity > 0.45) {
+    syntheticRisk += 0.32;
+  } else if (pitchPeriodicity < 0.35) {
+    syntheticRisk -= 0.22;
   }
 
-  // Clamp to [0, 1]
-  syntheticRisk = Math.min(1, Math.max(0, syntheticRisk));
+  // Indicator B: RMS variance (Humans have natural loudness & emotion modulation)
+  if (rmsVar < 0.002) {
+    syntheticRisk += 0.20;
+  } else if (rmsVar > 0.004) {
+    syntheticRisk -= 0.18;
+  }
+
+  // Indicator C: Pauses (Humans breathe and pause)
+  if (pauseRatio < 0.03) {
+    syntheticRisk += 0.10;
+  } else if (pauseRatio > 0.06) {
+    syntheticRisk -= 0.15;
+  }
+
+  // Clamp to [0.05, 0.98]
+  syntheticRisk = Math.min(0.98, Math.max(0.05, syntheticRisk));
 
   return {
     rmsVar,
