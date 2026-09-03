@@ -78,32 +78,32 @@ class AASISTClassifier:
         dyn_range = float(20 * np.log10((peak + 1e-6) / noise_floor))
 
         # 8. AASIST Integrated Spoof Score Calculation
-        # Neutral baseline: 0.50
-        spoof_score = 0.50
+        # Authentic voice baseline: 0.35
+        spoof_score = 0.35
 
-        # Indicator A: Periodic Vocoder Harmonics
-        if max_periodicity > 0.45:
-            spoof_score += 0.15
-        elif max_periodicity < 0.28:
-            spoof_score -= 0.15
+        # Indicator A: Periodic Vocoder Harmonics (AI vocoders have persistent rigidity without dynamic modulation)
+        if max_periodicity > 0.65 and rms_var < 0.004:
+            spoof_score += 0.25   # True synthetic vocoder flatline
+        elif max_periodicity < 0.35:
+            spoof_score -= 0.12   # Natural vocal fold jitter
 
-        # Indicator B: RMS Variance (flat synthetic volume vs natural dynamics)
-        if rms_var < 0.003:
-            spoof_score += 0.12
-        elif rms_var > 0.009:
-            spoof_score -= 0.12
+        # Indicator B: RMS Variance (flat synthetic volume vs natural speech dynamics)
+        if rms_var < 0.002:
+            spoof_score += 0.20   # Unnaturally flat volume
+        elif rms_var > 0.005:
+            spoof_score -= 0.15   # Natural expressive volume modulation
 
-        # Indicator C: Spectral Flatness
+        # Indicator C: Spectral Flatness (Vocoder frequency regularity)
         if spectral_flatness < 0.06:
-            spoof_score += 0.10
-        elif spectral_flatness > 0.15:
-            spoof_score -= 0.10
+            spoof_score += 0.15   # Synthetic vocoder phase
+        elif spectral_flatness > 0.12:
+            spoof_score -= 0.10   # Natural acoustic diversity
 
-        # Indicator D: Natural Speech Pauses
-        if pause_ratio < 0.04:
-            spoof_score += 0.08
-        elif pause_ratio > 0.18:
-            spoof_score -= 0.08
+        # Indicator D: Speech Pauses & Respiration (Humans pause to breathe)
+        if pause_ratio < 0.03:
+            spoof_score += 0.12   # Unbroken continuous generation
+        elif pause_ratio > 0.08:
+            spoof_score -= 0.12   # Natural conversational pauses
 
         # Clamp between 0.02 and 0.98
         spoof_score = float(np.clip(spoof_score, 0.02, 0.98))
@@ -111,10 +111,10 @@ class AASISTClassifier:
         bonafide_score = 1.0 - spoof_score
 
         # Decision Thresholds
-        if spoof_score >= 0.55:
+        if spoof_score >= 0.58:
             decision = "BLOCK"
             status = "AI Voice Clone Detected (High-Risk Impersonation Attack)"
-        elif spoof_score >= 0.35:
+        elif spoof_score >= 0.50:
             decision = "FLAGGED"
             status = "Ambiguous Signal — Step-Up Telephony OTP Challenge Dispatched"
         else:
