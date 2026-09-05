@@ -2,6 +2,14 @@
 import numpy as np
 from scipy.signal import spectrogram, correlate
 
+try:
+    from .aasist_inference import BLOCK_THRESHOLD, FLAG_THRESHOLD
+except (ImportError, ValueError):
+    try:
+        from model.aasist_inference import BLOCK_THRESHOLD, FLAG_THRESHOLD
+    except (ImportError, ValueError):
+        from aasist_inference import BLOCK_THRESHOLD, FLAG_THRESHOLD
+
 class AASISTClassifier:
     """
     VoiceGuard AASIST (Audio Anti-Spoofing using Integrated Spectro-Temporal Graph Attention)
@@ -110,11 +118,11 @@ class AASISTClassifier:
         print(f"[VoiceGuard DEBUG] periodicity={max_periodicity:.3f} rms_var={rms_var:.5f} flatness={spectral_flatness:.3f} pause={pause_ratio:.3f} -> spoof_score={spoof_score:.3f}")
         bonafide_score = 1.0 - spoof_score
 
-        # Decision Thresholds
-        if spoof_score >= 0.58:
+        # Decision Thresholds using centralized constants
+        if spoof_score >= BLOCK_THRESHOLD:
             decision = "BLOCK"
             status = "AI Voice Clone Detected (High-Risk Impersonation Attack)"
-        elif spoof_score >= 0.50:
+        elif spoof_score >= FLAG_THRESHOLD:
             decision = "FLAGGED"
             status = "Ambiguous Signal — Step-Up Telephony OTP Challenge Dispatched"
         else:
@@ -126,7 +134,7 @@ class AASISTClassifier:
             "spoof_probability": round(spoof_score * 100, 1),
             "bonafide_probability": round(bonafide_score * 100, 1),
             "trust_score": round(bonafide_score * 100, 1),
-            "prediction": "SPOOF" if spoof_score >= 0.50 else "BONAFIDE",
+            "prediction": "SPOOF" if spoof_score >= FLAG_THRESHOLD else "BONAFIDE",
             "decision": decision,
             "status": status,
             "metrics": {
@@ -137,7 +145,7 @@ class AASISTClassifier:
                 "pauseRatio": pause_ratio,
                 "dynamicRangeDb": dyn_range,
                 "spectralFlatness": spectral_flatness,
-                "temporalRegularity": 0.04 if spoof_score >= 0.55 else 0.45,
+                "temporalRegularity": 0.04 if spoof_score >= BLOCK_THRESHOLD else 0.45,
                 "sampleRate": fs,
                 "unusualSampleRate": False,
                 "syntheticRisk": spoof_score,
